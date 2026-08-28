@@ -29,11 +29,44 @@
         .glass-panel { background: #101F18; border: 1px solid #1D3126; }
         .glow-text { text-shadow: 0 0 10px rgba(117, 224, 99, 0.5); }
         .pulse-dot { width: 8px; height: 8px; background-color: #75E063; border-radius: 50%; box-shadow: 0 0 10px #75E063; animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { opacity: 1; box-shadow: 0 0 10px #75E063; } 50% { opacity: 0.5; box-shadow: 0 0 20px #75E063; } 100% { opacity: 1; box-shadow: 0 0 10px #75E063; } }
+        .pulse-dot.offline { background-color: #ff6b6b; box-shadow: 0 0 10px #ff6b6b; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
         canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: auto; }
         .ui-layer { position: relative; z-index: 10; pointer-events: none; }
         .ui-panel { pointer-events: auto; }
         
+        .btn-start {
+            background: linear-gradient(135deg, #75E063 0%, #45A036 100%);
+            color: #0B120E;
+            padding: 8px 24px;
+            border-radius: 4px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            font-size: 0.8rem;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 0 15px rgba(117, 224, 99, 0.3);
+        }
+        .btn-start:hover { box-shadow: 0 0 25px rgba(117, 224, 99, 0.6); transform: translateY(-1px); }
+        
+        .btn-stop {
+            background: linear-gradient(135deg, #ff6b6b 0%, #c92a2a 100%);
+            color: #F1F5F2;
+            padding: 8px 24px;
+            border-radius: 4px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            font-size: 0.8rem;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 0 15px rgba(255, 107, 107, 0.3);
+        }
+        .btn-stop:hover { box-shadow: 0 0 25px rgba(255, 107, 107, 0.6); transform: translateY(-1px); }
+
         #tooltip {
             position: absolute;
             background: rgba(16, 31, 24, 0.95);
@@ -63,16 +96,26 @@
 
     <!-- UI LAYER -->
     <div class="ui-layer flex flex-col h-full">
-        <header class="flex justify-between items-center mb-6 border-b border-borderSage pb-4 shrink-0">
+        <header class="flex justify-between items-center mb-6 border-b border-borderSage pb-4 shrink-0 ui-panel">
             <div>
                 <h1 class="text-2xl font-bold tracking-widest textPrimary">AUTONOMOUS QUANT <span class="text-textSecondary font-normal text-sm ml-2">v2.0</span></h1>
                 <p class="text-textSecondary text-xs mt-1 uppercase tracking-widest">Run ID: <span class="text-accentLime">NET-99402X</span></p>
             </div>
-            <div class="text-right flex items-center gap-4">
+            <div class="text-right flex items-center gap-6">
+                <!-- Status Indicator -->
                 <div class="flex items-center gap-2">
-                    <div class="pulse-dot"></div>
-                    <span class="text-accentLime text-sm tracking-widest uppercase">System Online</span>
+                    <div id="status-dot" class="pulse-dot offline"></div>
+                    <span id="status-text" class="text-textSecondary text-sm tracking-widest uppercase">System Offline</span>
                 </div>
+                
+                <!-- Interval Dropdown -->
+                <select id="interval-select" class="bg-bgSurface border border-borderSage text-textPrimary text-xs uppercase tracking-widest rounded p-2 outline-none cursor-pointer">
+                    <option value="30">Every 30 Seconds</option>
+                    <option value="3600">Every 1 Hour</option>
+                </select>
+
+                <!-- Start/Stop Button -->
+                <button id="control-btn" class="btn-start" onclick="toggleBot()">Initialize Engine</button>
             </div>
         </header>
 
@@ -99,7 +142,7 @@
                         <p class="text-textSecondary text-xs uppercase tracking-widest">DeepSeek Engine</p>
                         <span class="bg-accentLime/20 text-accentLime text-xs px-2 py-1 rounded border border-accentLime/30" id="ui-confidence">0%</span>
                     </div>
-                    <p class="text-sm textPrimary leading-relaxed" id="ui-logic">Initializing connection to AI backend...</p>
+                    <p class="text-sm textPrimary leading-relaxed" id="ui-logic">Waiting for engine initialization...</p>
                 </div>
 
                 <!-- Execution Feed -->
@@ -123,7 +166,6 @@
         let nodes = [];
         let edges = [];
 
-        // Camera / Zoom state
         let scale = 1.0;
         let panX = 0;
         let panY = 0;
@@ -137,7 +179,6 @@
         window.addEventListener('resize', resize);
         resize();
 
-        // Canvas Interaction Events
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
             const zoomSensitivity = 0.001;
@@ -202,7 +243,6 @@
             ctx.translate(panX, panY);
             ctx.scale(scale, scale);
 
-            // Draw edges
             ctx.lineWidth = 1;
             edges.forEach(edge => {
                 const distance = Math.hypot(edge.from.x - edge.to.x, edge.from.y - edge.to.y);
@@ -215,7 +255,6 @@
                 }
             });
 
-            // Draw nodes & move them
             nodes.forEach(node => {
                 node.x += node.vx;
                 node.y += node.vy;
@@ -235,8 +274,31 @@
         drawNetwork();
 
         // ----------------------------------------------------
-        // ACTUAL BACKEND INTEGRATION
+        // BACKEND INTEGRATION & UI CONTROLS
         // ----------------------------------------------------
+        let isRunning = false;
+        
+        async function toggleBot() {
+            const interval = parseInt(document.getElementById('interval-select').value);
+            isRunning = !isRunning;
+            
+            await fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: isRunning ? 'start' : 'stop', interval: interval })
+            });
+            
+            const btn = document.getElementById('control-btn');
+            if (isRunning) {
+                btn.className = 'btn-stop';
+                btn.innerText = 'Stop Engine';
+            } else {
+                btn.className = 'btn-start';
+                btn.innerText = 'Initialize Engine';
+            }
+            pollBackend(); // immediate UI update
+        }
+
         const assetColors = {
             "BTCUSD": "#FFE600",
             "ETHUSD": "#00FFF0",
@@ -253,6 +315,20 @@
                 const response = await fetch('/api/status');
                 const data = await response.json();
 
+                // Update Status Indicator
+                const statusDot = document.getElementById('status-dot');
+                const statusText = document.getElementById('status-text');
+                
+                if (data.is_running) {
+                    statusDot.className = 'pulse-dot';
+                    statusText.innerText = 'System Online';
+                    statusText.className = 'text-accentLime text-sm tracking-widest uppercase';
+                } else {
+                    statusDot.className = 'pulse-dot offline';
+                    statusText.innerText = 'System Offline';
+                    statusText.className = 'text-textSecondary text-sm tracking-widest uppercase';
+                }
+
                 // Update UI Elements
                 document.getElementById('ui-equity').innerText = data.equity;
                 document.getElementById('ui-confidence').innerText = data.last_confidence;
@@ -262,11 +338,9 @@
                 if (data.trade_history && data.trade_history.length > lastTradeCount) {
                     const newTradesCount = data.trade_history.length - lastTradeCount;
                     
-                    // Loop over new trades (from oldest new to newest)
                     for (let i = newTradesCount - 1; i >= 0; i--) {
                         const trade = data.trade_history[i];
                         
-                        // Add to Feed
                         const feed = document.getElementById('ui-feed');
                         const isBuy = trade.signal === "BUY";
                         const tr = document.createElement('div');
@@ -280,7 +354,6 @@
                         `;
                         feed.insertBefore(tr, feed.firstChild);
 
-                        // Spawn Graph Node
                         let nodeColor = assetColors[trade.asset];
                         if (!nodeColor) nodeColor = isBuy ? '#75E063' : '#ff6b6b';
 
@@ -295,16 +368,13 @@
                             data: trade
                         };
 
-                        // Connect to nearby existing nodes
                         nodes.forEach(existingNode => {
                             if (Math.random() > 0.3) {
                                 edges.push({ from: node, to: existingNode });
                             }
                         });
-
                         nodes.push(node);
                     }
-                    
                     lastTradeCount = data.trade_history.length;
                 }
             } catch (err) {
@@ -312,7 +382,6 @@
             }
         }
 
-        // Poll every 3 seconds
         setInterval(pollBackend, 3000);
         pollBackend();
     </script>
