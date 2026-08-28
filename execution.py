@@ -2,25 +2,23 @@ import platform
 import config
 
 if platform.system() != "Windows":
-    # Mock execution for Mac Testing
-    def execute_trade(signal):
+    def execute_trade(symbol, signal):
         if signal == "HOLD":
             return "No trade placed."
-        return f"MOCKED: Successfully placed {signal} order for {config.SYMBOL} with SL/TP."
+        return f"MOCKED: Successfully placed {signal} order for {symbol} with SL/TP."
 else:
     import MetaTrader5 as mt5
 
-    def execute_trade(signal):
+    def execute_trade(symbol, signal):
         if signal == "HOLD":
             return "No trade placed."
             
         action = mt5.ORDER_TYPE_BUY if signal == "BUY" else mt5.ORDER_TYPE_SELL
         
-        symbol_info = mt5.symbol_info_tick(config.SYMBOL)
+        symbol_info = mt5.symbol_info_tick(symbol)
         price = symbol_info.ask if signal == "BUY" else symbol_info.bid
-        point = mt5.symbol_info(config.SYMBOL).point
+        point = mt5.symbol_info(symbol).point
         
-        # Calculate SL and TP based on config points
         if signal == "BUY":
             sl = price - (config.SL_POINTS * point)
             tp = price + (config.TP_POINTS * point)
@@ -30,7 +28,7 @@ else:
         
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": config.SYMBOL,
+            "symbol": symbol,
             "volume": config.TRADE_LOT_SIZE,
             "type": action,
             "price": price,
@@ -47,4 +45,4 @@ else:
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             return f"Order failed: {result.comment}"
         
-        return f"Successfully placed {signal} order for {config.SYMBOL} with SL/TP!"
+        return f"Successfully placed {signal} order for {symbol} with SL/TP!"

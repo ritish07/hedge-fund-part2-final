@@ -12,10 +12,9 @@ import datetime
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
-# Global state for the frontend dashboard
 bot_state = {
     "is_running": False,
-    "interval": 30, # Default to 30 seconds
+    "interval": 30,
     "status": "System Offline",
     "equity": "$0.00",
     "last_logic": "Waiting for engine initialization...",
@@ -42,55 +41,64 @@ async def control_bot(req: ControlRequest):
 
 async def trading_loop():
     print("AI Hedge Fund Bot Ready...")
-    last_trade_time = datetime.datetime.now() - datetime.timedelta(days=1) # Force immediate run on start
+    last_trade_time = datetime.datetime.now() - datetime.timedelta(days=1)
     
     while True:
         now = datetime.datetime.now()
         
-        # Check if bot is running AND the interval has passed
         if bot_state["is_running"] and (now - last_trade_time).total_seconds() >= bot_state["interval"]:
             try:
-                print(f"[{now.strftime('%H:%M:%S')}] Running Trading Cycle...")
+                print(f"\n[{now.strftime('%H:%M:%S')}] Running Trading Cycle...")
                 
-                # 1. Fetch Data
-                data = data_engine.fetch_multi_timeframe_data()
-                bot_state["equity"] = f"${data.get('equity', 0):,.2f}"
-                
-                # 2. Get AI Decision
-                decision = ai_brain.analyze_market(data)
-                
-                logic = decision.get("logic", "No logic provided")
-                confidence = decision.get("confidence_score", 0)
-                signal = decision.get("signal", "HOLD")
-                
-                bot_state["last_logic"] = logic
-                bot_state["last_confidence"] = f"{confidence}%"
-                
-                # 3. Execute
-                if signal in ["BUY", "SELL"]:
-                    exec_result = execution.execute_trade(signal)
-                    print(f"Signal: {signal} | Result: {exec_result}")
+                # Scan all symbols sequentially
+                for symbol in config.SYMBOLS:
+                    if not bot_state["is_running"]: 
+                        break # Stop immediately if user clicked Stop
+                        
+                    print(f"-> Analyzing {symbol}...")
+                    bot_state["last_logic"] = f"Analyzing market structure for {symbol}..."
                     
-                    # Append to history for the UI Graph
-                    trade = {
-                        "time": now.strftime("%H:%M:%S"),
-                        "asset": config.SYMBOL,
-                        "signal": signal,
-                        "logic": logic,
-                        "pnl": 0 # PNL is 0 upon execution
-                    }
-                    bot_state["trade_history"].insert(0, trade)
-                else:
-                    print(f"Signal: HOLD | Logic: {logic}")
+                    # 1. Fetch Data
+                    data = data_engine.fetch_multi_timeframe_data(symbol)
+                    if data and 'equity' in data:
+                        bot_state["equity"] = f"${data.get('equity', 0):,.2f}"
                     
-                # Update last trade time after a successful cycle
+                    # 2. AI Decision
+                    decision = ai_brain.get_ai_decision(data, symbol)
+                    
+                    logic = decision.get("logic", "No logic provided")
+                    confidence = decision.get("confidence_score", 0)
+                    signal = decision.get("signal", "HOLD")
+                    
+                    bot_state["last_logic"] = f"[{symbol}] {logic}"
+                    bot_state["last_confidence"] = f"{confidence}%"
+                    
+                    # 3. Execute
+                    if signal in ["BUY", "SELL"]:
+                        exec_result = execution.execute_trade(symbol, signal)
+                        print(f"   Signal: {signal} | Result: {exec_result}")
+                        
+                        trade = {
+                            "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                            "asset": symbol,
+                            "signal": signal,
+                            "logic": logic,
+                            "pnl": 0
+                        }
+                        bot_state["trade_history"].insert(0, trade)
+                    else:
+                        print(f"   Signal: HOLD")
+                        
+                    # Brief pause between symbol API calls to avoid rate limiting
+                    await asyncio.sleep(2)
+                    
                 last_trade_time = datetime.datetime.now()
+                bot_state["last_logic"] = f"Cycle complete. Waiting for next interval..."
                 
             except Exception as e:
                 print(f"Error in trading loop: {e}")
-                last_trade_time = datetime.datetime.now() # Reset time even on error to prevent spam
+                last_trade_time = datetime.datetime.now()
                 
-        # Sleep briefly to keep the loop responsive to Stop commands
         await asyncio.sleep(1) 
 
 @app.on_event("startup")

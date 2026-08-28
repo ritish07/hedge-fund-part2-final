@@ -1,6 +1,6 @@
 import platform
 
-SYMBOL = "EURUSD"
+SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "BTCUSD", "ETHUSD", "XAUUSD"]
 TIMEFRAME = "H1"
 TRADE_LOT_SIZE = 0.1
 
