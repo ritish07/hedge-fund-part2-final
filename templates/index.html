@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Quant Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        bgDeep: '#0B120E',
+                        bgSurface: '#101F18',
+                        accentLime: '#75E063',
+                        textPrimary: '#F1F5F2',
+                        textSecondary: '#7E9489',
+                        borderSage: '#1D3126',
+                    },
+                    fontFamily: {
+                        mono: ['JetBrains Mono', 'Menlo', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'JetBrains Mono', monospace; background-color: #0B120E; color: #F1F5F2; overflow-x: hidden; }
+        .glass-panel { background: #101F18; border: 1px solid #1D3126; }
+        .glow-text { text-shadow: 0 0 10px rgba(117, 224, 99, 0.5); }
+        .pulse-dot { width: 8px; height: 8px; background-color: #75E063; border-radius: 50%; box-shadow: 0 0 10px #75E063; animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 1; box-shadow: 0 0 10px #75E063; } 50% { opacity: 0.5; box-shadow: 0 0 20px #75E063; } 100% { opacity: 1; box-shadow: 0 0 10px #75E063; } }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: auto; }
+        .ui-layer { position: relative; z-index: 10; pointer-events: none; }
+        .ui-panel { pointer-events: auto; }
+        
+        #tooltip {
+            position: absolute;
+            background: rgba(16, 31, 24, 0.95);
+            border: 1px solid #1D3126;
+            padding: 12px;
+            border-radius: 6px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 50;
+            backdrop-filter: blur(4px);
+            min-width: 250px;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col p-6">
+
+    <!-- CANVAS GRAPH LAYER -->
+    <canvas id="networkCanvas"></canvas>
+    <div id="tooltip">
+        <div class="flex justify-between items-center border-b border-borderSage pb-2 mb-2">
+            <span class="text-accentLime font-bold" id="tt-asset">EURUSD</span>
+            <span class="text-sm" id="tt-pnl">PENDING</span>
+        </div>
+        <p class="text-xs text-textSecondary" id="tt-logic">AI Logic here...</p>
+    </div>
+
+    <!-- UI LAYER -->
+    <div class="ui-layer flex flex-col h-full">
+        <header class="flex justify-between items-center mb-6 border-b border-borderSage pb-4 shrink-0">
+            <div>
+                <h1 class="text-2xl font-bold tracking-widest textPrimary">AUTONOMOUS QUANT <span class="text-textSecondary font-normal text-sm ml-2">v2.0</span></h1>
+                <p class="text-textSecondary text-xs mt-1 uppercase tracking-widest">Run ID: <span class="text-accentLime">NET-99402X</span></p>
+            </div>
+            <div class="text-right flex items-center gap-4">
+                <div class="flex items-center gap-2">
+                    <div class="pulse-dot"></div>
+                    <span class="text-accentLime text-sm tracking-widest uppercase">System Online</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="flex-1 flex gap-6 min-h-0">
+            <!-- Left Space for the Artificial Brain visualization -->
+            <div class="flex-1 relative">
+                <div class="absolute bottom-4 left-4 text-xs text-textSecondary bg-bgSurface/80 p-2 rounded border border-borderSage backdrop-blur">
+                    SCROLL = ZOOM | CLICK+DRAG = PAN
+                </div>
+            </div>
+
+            <!-- Right Sidebar: Stats & Feed -->
+            <div class="w-96 flex flex-col gap-6 shrink-0 ui-panel">
+                
+                <!-- Live Equity -->
+                <div class="glass-panel p-6 rounded-lg">
+                    <p class="text-textSecondary text-xs uppercase tracking-widest mb-1">Live Equity</p>
+                    <p class="text-3xl font-bold textPrimary glow-text" id="ui-equity">Fetching...</p>
+                </div>
+
+                <!-- AI Brain Status -->
+                <div class="glass-panel p-6 rounded-lg">
+                    <div class="flex justify-between items-start mb-4">
+                        <p class="text-textSecondary text-xs uppercase tracking-widest">DeepSeek Engine</p>
+                        <span class="bg-accentLime/20 text-accentLime text-xs px-2 py-1 rounded border border-accentLime/30" id="ui-confidence">0%</span>
+                    </div>
+                    <p class="text-sm textPrimary leading-relaxed" id="ui-logic">Initializing connection to AI backend...</p>
+                </div>
+
+                <!-- Execution Feed -->
+                <div class="glass-panel p-6 rounded-lg flex-1 flex flex-col min-h-0">
+                    <p class="text-textSecondary text-xs uppercase tracking-widest mb-4">Live Execution Feed</p>
+                    <div class="overflow-y-auto pr-2 space-y-3 flex-1" id="ui-feed">
+                        <!-- Trades injected here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CANVAS SCRIPT -->
+    <script>
+        const canvas = document.getElementById('networkCanvas');
+        const ctx = canvas.getContext('2d');
+        const tooltip = document.getElementById('tooltip');
+        
+        let width, height;
+        let nodes = [];
+        let edges = [];
+
+        // Camera / Zoom state
+        let scale = 1.0;
+        let panX = 0;
+        let panY = 0;
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            width = canvas.width;
+            height = canvas.height;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Canvas Interaction Events
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomSensitivity = 0.001;
+            const delta = -e.deltaY * zoomSensitivity;
+            const newScale = Math.max(0.2, Math.min(scale * (1 + delta), 5));
+            const mouseX = e.clientX;
+            const mouseY = e.clientY;
+            panX = mouseX - (mouseX - panX) * (newScale / scale);
+            panY = mouseY - (mouseY - panY) * (newScale / scale);
+            scale = newScale;
+        });
+
+        let isDragging = false, dragStartX = 0, dragStartY = 0;
+        canvas.style.cursor = 'grab';
+
+        canvas.addEventListener('mousedown', (e) => { isDragging = true; dragStartX = e.clientX; dragStartY = e.clientY; canvas.style.cursor = 'grabbing'; });
+        canvas.addEventListener('mouseup', () => { isDragging = false; canvas.style.cursor = 'grab'; });
+        canvas.addEventListener('mouseleave', () => { isDragging = false; canvas.style.cursor = 'grab'; tooltip.style.opacity = 0; });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                panX += (e.clientX - dragStartX);
+                panY += (e.clientY - dragStartY);
+                dragStartX = e.clientX;
+                dragStartY = e.clientY;
+                tooltip.style.opacity = 0;
+                return;
+            }
+
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            let hoveredNode = null;
+            for (let node of nodes) {
+                const screenX = (node.x * scale) + panX;
+                const screenY = (node.y * scale) + panY;
+                const dx = mouseX - screenX;
+                const dy = mouseY - screenY;
+                if (Math.sqrt(dx*dx + dy*dy) < (node.radius * scale) + 8) { 
+                    hoveredNode = node; break;
+                }
+            }
+
+            if (hoveredNode) {
+                document.getElementById('tt-asset').innerText = hoveredNode.data.asset;
+                const pnlEl = document.getElementById('tt-pnl');
+                pnlEl.innerText = hoveredNode.data.signal;
+                pnlEl.style.color = hoveredNode.data.signal == "BUY" ? '#75E063' : '#ff6b6b';
+                document.getElementById('tt-logic').innerText = hoveredNode.data.logic;
+                tooltip.style.left = e.clientX + 'px';
+                tooltip.style.top = e.clientY + 'px';
+                tooltip.style.opacity = 1;
+            } else {
+                tooltip.style.opacity = 0;
+            }
+        });
+
+        function drawNetwork() {
+            ctx.clearRect(0, 0, width, height);
+            ctx.save();
+            ctx.translate(panX, panY);
+            ctx.scale(scale, scale);
+
+            // Draw edges
+            ctx.lineWidth = 1;
+            edges.forEach(edge => {
+                const distance = Math.hypot(edge.from.x - edge.to.x, edge.from.y - edge.to.y);
+                if (distance < 200) {
+                    ctx.beginPath();
+                    ctx.moveTo(edge.from.x, edge.from.y);
+                    ctx.lineTo(edge.to.x, edge.to.y);
+                    ctx.strokeStyle = `rgba(117, 224, 99, ${1 - (distance/200)})`;
+                    ctx.stroke();
+                }
+            });
+
+            // Draw nodes & move them
+            nodes.forEach(node => {
+                node.x += node.vx;
+                node.y += node.vy;
+
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+                ctx.fillStyle = node.color;
+                ctx.shadowBlur = node.glow;
+                ctx.shadowColor = node.color;
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            });
+
+            ctx.restore();
+            requestAnimationFrame(drawNetwork);
+        }
+        drawNetwork();
+
+        // ----------------------------------------------------
+        // ACTUAL BACKEND INTEGRATION
+        // ----------------------------------------------------
+        const assetColors = {
+            "BTCUSD": "#FFE600",
+            "ETHUSD": "#00FFF0",
+            "XAUUSD": "#D462FF",
+            "EURUSD": "#FF8C42",
+            "GBPUSD": "#2DD4BF",
+            "SOLUSD": "#FF1493"
+        };
+        
+        let lastTradeCount = 0;
+
+        async function pollBackend() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+
+                // Update UI Elements
+                document.getElementById('ui-equity').innerText = data.equity;
+                document.getElementById('ui-confidence').innerText = data.last_confidence;
+                document.getElementById('ui-logic').innerText = data.last_logic;
+
+                // Process new trades
+                if (data.trade_history && data.trade_history.length > lastTradeCount) {
+                    const newTradesCount = data.trade_history.length - lastTradeCount;
+                    
+                    // Loop over new trades (from oldest new to newest)
+                    for (let i = newTradesCount - 1; i >= 0; i--) {
+                        const trade = data.trade_history[i];
+                        
+                        // Add to Feed
+                        const feed = document.getElementById('ui-feed');
+                        const isBuy = trade.signal === "BUY";
+                        const tr = document.createElement('div');
+                        tr.className = "flex justify-between items-center p-3 border border-borderSage rounded bg-bgDeep";
+                        tr.innerHTML = `
+                            <div>
+                                <span class="text-xs text-textSecondary block">${trade.time}</span>
+                                <span class="text-sm font-bold textPrimary">${trade.asset}</span>
+                            </div>
+                            <span class="${isBuy ? 'text-accentLime' : 'text-red-400'} font-bold">${trade.signal}</span>
+                        `;
+                        feed.insertBefore(tr, feed.firstChild);
+
+                        // Spawn Graph Node
+                        let nodeColor = assetColors[trade.asset];
+                        if (!nodeColor) nodeColor = isBuy ? '#75E063' : '#ff6b6b';
+
+                        const node = {
+                            x: width/2 + (Math.random()*150 - 75),
+                            y: height/2 + (Math.random()*150 - 75),
+                            vx: (Math.random() - 0.5) * 0.08,
+                            vy: (Math.random() - 0.5) * 0.08,
+                            radius: 8,
+                            color: nodeColor,
+                            glow: 25,
+                            data: trade
+                        };
+
+                        // Connect to nearby existing nodes
+                        nodes.forEach(existingNode => {
+                            if (Math.random() > 0.3) {
+                                edges.push({ from: node, to: existingNode });
+                            }
+                        });
+
+                        nodes.push(node);
+                    }
+                    
+                    lastTradeCount = data.trade_history.length;
+                }
+            } catch (err) {
+                console.error("API Error:", err);
+            }
+        }
+
+        // Poll every 3 seconds
+        setInterval(pollBackend, 3000);
+        pollBackend();
+    </script>
+</body>
+</html>

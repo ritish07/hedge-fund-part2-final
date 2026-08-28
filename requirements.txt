@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+jinja2
+requests
+pandas
+# MetaTrader5 (Only works on Windows)
