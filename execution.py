@@ -16,15 +16,21 @@ else:
         action = mt5.ORDER_TYPE_BUY if signal == "BUY" else mt5.ORDER_TYPE_SELL
         
         symbol_info = mt5.symbol_info_tick(symbol)
+        if not symbol_info:
+            return f"Error: Could not retrieve ticks for {symbol}. Check if symbol is in Market Watch."
+            
         price = symbol_info.ask if signal == "BUY" else symbol_info.bid
-        point = mt5.symbol_info(symbol).point
         
+        # Get the correct decimal places for the symbol to prevent "Invalid Stops" format errors
+        digits = mt5.symbol_info(symbol).digits
+        
+        # Dynamic Percentage-based SL/TP 
         if signal == "BUY":
-            sl = price - (config.SL_POINTS * point)
-            tp = price + (config.TP_POINTS * point)
+            sl = round(price * (1 - config.SL_PERCENT), digits)
+            tp = round(price * (1 + config.TP_PERCENT), digits)
         else: # SELL
-            sl = price + (config.SL_POINTS * point)
-            tp = price - (config.TP_POINTS * point)
+            sl = round(price * (1 + config.SL_PERCENT), digits)
+            tp = round(price * (1 - config.TP_PERCENT), digits)
         
         request = {
             "action": mt5.TRADE_ACTION_DEAL,

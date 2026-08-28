@@ -1,12 +1,14 @@
 import platform
 
-SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "BTCUSD", "ETHUSD", "XAUUSD"]
+# Ensure these match EXACTLY with your MT5 Market Watch (e.g. if your broker uses 'EURUSDm', add the 'm'!)
+SYMBOLS = ["EURUSDm", "GBPUSDm", "USDJPYm", "BTCUSDm", "ETHUSDm", "XAUUSDm"]
 TIMEFRAME = "H1"
-TRADE_LOT_SIZE = 0.1
+TRADE_LOT_SIZE = 0.01 # Adjusted to 0.01 for micro accounts as seen in your logs
 
-# Stop Loss and Take Profit points (e.g., 200 points = 20 pips on standard 5-digit broker)
-SL_POINTS = 200
-TP_POINTS = 400
+# Dynamic Stop Loss and Take Profit (Using Percentages so it works perfectly across Crypto, Gold, and Forex)
+# 0.002 = 0.2% risk (Roughly 20 pips on EURUSD, $120 on BTC)
+SL_PERCENT = 0.002
+TP_PERCENT = 0.004
 
 # DEEPSEEK API CONFIGURATION
 DEEPSEEK_API_KEY = "sk-your-deepseek-api-key-here"
