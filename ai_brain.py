@@ -2,16 +2,20 @@ import requests
 import json
 import config
 
+def analyze_market(market_data, symbol="EURUSD"):
+    return get_ai_decision(market_data, symbol)
+
 def get_ai_decision(market_data, symbol):
-    if not config.DEEPSEEK_API_KEY or config.DEEPSEEK_API_KEY == "sk-your-deepseek-api-key-here":
-        # Mock Response for Mac Testing if no API key is provided
+    if not config.DEEPSEEK_API_KEY or config.DEEPSEEK_API_KEY.startswith("sk-your"):
+        # Mock Response for Testing if no API key is provided
         return {
             "signal": "BUY",
             "confidence_score": 85,
             "logic": f"[{symbol}] The Daily trend is bullish, and 1H structure just broke above a major resistance level. Momentum is strong."
         }
     
-    url = "https://api.deepseek.com/chat/completions"
+    base_url = getattr(config, "DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {config.DEEPSEEK_API_KEY}",
         "Content-Type": "application/json"
@@ -27,7 +31,10 @@ def get_ai_decision(market_data, symbol):
     }}
     """
 
-    user_prompt = f"Here is the market data for {symbol}:\nDaily:\n{market_data['daily_data']}\n\nH1:\n{market_data['h1_data']}"
+    daily = market_data.get("daily_data", "") if isinstance(market_data, dict) else ""
+    h1 = market_data.get("h1_data", "") if isinstance(market_data, dict) else ""
+    current_price = market_data.get("current_price", "") if isinstance(market_data, dict) else ""
+    user_prompt = f"Here is the market data for {symbol}:\nCurrent Price: {current_price}\n\nDaily:\n{daily}\n\nH1:\n{h1}"
 
     payload = {
         "model": "deepseek-chat",
@@ -38,11 +45,19 @@ def get_ai_decision(market_data, symbol):
         "response_format": {"type": "json_object"}
     }
 
-    response = requests.post(url, headers=headers, json=payload)
-    data = response.json()
-    
     try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        data = response.json()
         content = data['choices'][0]['message']['content']
-        return json.loads(content)
+        parsed = json.loads(content)
+        if "signal" not in parsed:
+            parsed["signal"] = "HOLD"
+        if "confidence_score" not in parsed:
+            parsed["confidence_score"] = 50
+        if "logic" not in parsed:
+            parsed["logic"] = f"Market structure analyzed for {symbol}."
+        return parsed
     except Exception as e:
-        return {"signal": "ERROR", "confidence_score": 0, "logic": str(e)}
+        print(f"[DeepSeek Error for {symbol}]: {e}")
+        return {"signal": "HOLD", "confidence_score": 0, "logic": f"AI decision error for {symbol}: {e}"}
+

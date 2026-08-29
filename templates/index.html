@@ -315,19 +315,31 @@
                 const response = await fetch('/api/status');
                 const data = await response.json();
 
-                // Update Status Indicator
+                // Update Status Indicator and Control Button
                 const statusDot = document.getElementById('status-dot');
                 const statusText = document.getElementById('status-text');
+                const btn = document.getElementById('control-btn');
+                
+                isRunning = Boolean(data.is_running);
                 
                 if (data.is_running) {
                     statusDot.className = 'pulse-dot';
                     statusText.innerText = 'System Online';
                     statusText.className = 'text-accentLime text-sm tracking-widest uppercase';
+                    if (btn) {
+                        btn.className = 'btn-stop';
+                        btn.innerText = 'Stop Engine';
+                    }
                 } else {
                     statusDot.className = 'pulse-dot offline';
                     statusText.innerText = 'System Offline';
                     statusText.className = 'text-textSecondary text-sm tracking-widest uppercase';
+                    if (btn) {
+                        btn.className = 'btn-start';
+                        btn.innerText = 'Initialize Engine';
+                    }
                 }
+
 
                 // Update UI Elements
                 document.getElementById('ui-equity').innerText = data.equity;
