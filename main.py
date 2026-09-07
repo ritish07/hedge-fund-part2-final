@@ -1,128 +1,307 @@
-import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
-from contextlib import asynccontextmanager
-import asyncio
-import os
-import datetime
-import config
-import data_engine
-import ai_brain
-import execution
+# main.py
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+import asyncio
+from datetime import datetime, timezone
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+import config
+from data_engine import (
+    fetch_correlated_asset_prices,
+    fetch_multi_timeframe_data,
+)
+from ai_brain import get_ai_decision
+from execution import execute_trade
+from memory_store import append_trade_memory
+
+
+app = FastAPI(
+    title="Autonomous AI Hedge Fund",
+    description="AI-powered automated MT5 trading system",
+    version="1.0.0"
+)
+
+
+# ============================================================
+# GLOBAL BOT STATE
+# ============================================================
 
 bot_state = {
     "is_running": False,
     "interval": 30,
-    "status": "System Offline",
-    "equity": "$0.00",
-    "last_logic": "Waiting for engine initialization...",
-    "last_confidence": "0%",
+    "risk_percent": 1.0,
+    "equity": 0.0,
+    "last_logic": "",
+    "last_confidence": 0,
+    "last_signal": "HOLD",
+    "last_entry_price": None,
+    "last_stop_loss": None,
+    "last_take_profit": None,
     "trade_history": []
 }
 
+
+# ============================================================
+# API REQUEST MODEL
+# ============================================================
+
 class ControlRequest(BaseModel):
-    action: str
-    interval: int
+    action: str | None = None
+    interval: int | None = None
+    risk_percent: float | None = None
 
-last_trade_time = datetime.datetime.now() - datetime.timedelta(days=1)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    task = asyncio.create_task(trading_loop())
-    yield
-    task.cancel()
-
-app = FastAPI(lifespan=lifespan)
-templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+# ============================================================
+# CONTROL ENDPOINT
+# ============================================================
 
 @app.post("/api/control")
-async def control_bot(req: ControlRequest):
-    global last_trade_time
-    bot_state["interval"] = req.interval
-    if req.action == "start":
-        bot_state["is_running"] = True
-        bot_state["status"] = "System Online"
-        bot_state["last_logic"] = "Initializing connection to AI backend..."
-        last_trade_time = datetime.datetime.now() - datetime.timedelta(days=1)
-    else:
-        bot_state["is_running"] = False
-        bot_state["status"] = "System Offline"
-        bot_state["last_logic"] = "Engine stopped by user."
-    return {"status": "success"}
+async def control_bot(request: ControlRequest):
 
-async def trading_loop():
-    global last_trade_time
-    print("AI Hedge Fund Bot Ready...", flush=True)
-    
-    while True:
-        now = datetime.datetime.now()
-        
-        if bot_state["is_running"] and (now - last_trade_time).total_seconds() >= bot_state["interval"]:
-            try:
-                print(f"\n[{now.strftime('%H:%M:%S')}] Running Trading Cycle...", flush=True)
-                
-                # Scan all symbols sequentially
-                for symbol in config.SYMBOLS:
-                    if not bot_state["is_running"]: 
-                        break # Stop immediately if user clicked Stop
-                        
-                    print(f"-> Analyzing {symbol}...", flush=True)
-                    bot_state["last_logic"] = f"Analyzing market structure for {symbol}..."
-                    
-                    # 1. Fetch Data in worker thread
-                    data = await asyncio.to_thread(data_engine.fetch_multi_timeframe_data, symbol)
-                    if data and 'equity' in data:
-                        bot_state["equity"] = f"${data.get('equity', 0):,.2f}"
-                    
-                    # 2. AI Decision in worker thread
-                    decision = await asyncio.to_thread(ai_brain.get_ai_decision, data, symbol)
-                    
-                    logic = decision.get("logic", "No logic provided")
-                    confidence = decision.get("confidence_score", 0)
-                    signal = decision.get("signal", "HOLD")
-                    
-                    bot_state["last_logic"] = f"[{symbol}] {logic}"
-                    bot_state["last_confidence"] = f"{confidence}%"
-                    
-                    # 3. Execute in worker thread
-                    if signal in ["BUY", "SELL"]:
-                        exec_result = await asyncio.to_thread(execution.execute_trade, symbol, signal)
-                        print(f"   Signal: {signal} | Result: {exec_result}", flush=True)
-                        
-                        trade = {
-                            "time": datetime.datetime.now().strftime("%H:%M:%S"),
-                            "asset": symbol,
-                            "signal": signal,
-                            "logic": logic,
-                            "pnl": 0
-                        }
-                        bot_state["trade_history"].insert(0, trade)
-                    else:
-                        print(f"   Signal: HOLD", flush=True)
-                        
-                    # Brief pause between symbol API calls to avoid rate limiting
-                    await asyncio.sleep(2)
-                    
-                last_trade_time = datetime.datetime.now()
-                bot_state["last_logic"] = f"Cycle complete. Waiting for next interval..."
-                
-            except Exception as e:
-                print(f"Error in trading loop: {e}", flush=True)
-                last_trade_time = datetime.datetime.now()
-                
-        await asyncio.sleep(1) 
+    # --------------------------------------------------------
+    # Start / Stop
+    # --------------------------------------------------------
 
-@app.get("/")
-async def home(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html")
+    if request.action is not None:
+
+        action = request.action.lower()
+
+        if action == "start":
+            bot_state["is_running"] = True
+
+        elif action == "stop":
+            bot_state["is_running"] = False
+
+        else:
+            return {
+                "status": "error",
+                "message": "action must be 'start' or 'stop'"
+            }
+
+    # --------------------------------------------------------
+    # Update interval
+    # --------------------------------------------------------
+
+    if request.interval is not None:
+
+        if request.interval < 1:
+            return {
+                "status": "error",
+                "message": "interval must be at least 1 second"
+            }
+
+        bot_state["interval"] = request.interval
+
+    if request.risk_percent is not None:
+        if not 0 < request.risk_percent <= 100:
+            return {
+                "status": "error",
+                "message": "risk_percent must be greater than 0 and no more than 100"
+            }
+
+        bot_state["risk_percent"] = request.risk_percent
+
+    return {
+        "status": "success",
+        "bot_state": bot_state
+    }
+
+
+# ============================================================
+# STATUS ENDPOINT
+# ============================================================
 
 @app.get("/api/status")
 async def get_status():
     return bot_state
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
 
+# ============================================================
+# TRADING LOOP
+# ============================================================
+
+async def trading_loop():
+
+    while True:
+
+        # ----------------------------------------------------
+        # Only trade when bot is running
+        # ----------------------------------------------------
+
+        if bot_state["is_running"]:
+
+            for symbol in config.SYMBOLS:
+
+                # Bot may have been stopped while processing
+                if not bot_state["is_running"]:
+                    break
+
+                try:
+
+                    # ------------------------------------------------
+                    # 1. Fetch market data
+                    # ------------------------------------------------
+
+                    market_data = fetch_multi_timeframe_data(symbol)
+
+                    # Update current account equity
+                    bot_state["equity"] = market_data["equity"]
+
+                    # ------------------------------------------------
+                    # 2. Ask AI for decision
+                    # ------------------------------------------------
+
+                    decision = get_ai_decision(
+                        market_data,
+                        symbol
+                    )
+
+                    signal = decision["signal"]
+                    confidence = decision["confidence_score"]
+                    logic = decision["logic"]
+                    stop_loss = decision["stop_loss"]
+                    take_profit = decision["take_profit"]
+
+                    # Store latest AI analysis
+                    bot_state["last_logic"] = logic
+                    bot_state["last_confidence"] = confidence
+                    bot_state["last_signal"] = signal
+                    bot_state["last_entry_price"] = market_data["ask"]
+                    bot_state["last_stop_loss"] = stop_loss
+                    bot_state["last_take_profit"] = take_profit
+
+                    print(
+                        f"[AI] {symbol} | "
+                        f"Signal={signal} | "
+                        f"Confidence={confidence}"
+                    )
+
+                    # ------------------------------------------------
+                    # 3. Execute BUY / SELL
+                    # ------------------------------------------------
+
+                    if signal in ["BUY", "SELL"]:
+
+                        result = execute_trade(
+                            symbol,
+                            signal,
+                            stop_loss,
+                            take_profit,
+                            bot_state["risk_percent"],
+                        )
+
+                        # ------------------------------------------------
+                        # 4. Record executed trade
+                        # ------------------------------------------------
+
+                        trade_info = {
+                            "time": datetime.now(
+                                timezone.utc
+                            ).isoformat(),
+
+                            "asset": symbol,
+
+                            "signal": signal,
+                            "logic": logic,
+                            "entry_price": result["price"],
+                            "stop_loss": result["stop_loss"],
+                            "take_profit": result["take_profit"],
+                            "volume": result["volume"],
+                            "risk_percent": bot_state["risk_percent"],
+                            "deal": result["deal"],
+                            "order": result["order"],
+                            "status": "CONFIRMED",
+                        }
+
+                        # Persist the exact decision context alongside the
+                        # broker-confirmed fill for later learning/review.
+                        memory_record = {
+                            **trade_info,
+                            "market_context": {
+                                "captured_at": trade_info["time"],
+                                "volume": {
+                                    "h1_tick_volume": market_data[
+                                        "market_context"
+                                    ]["h1"]["tick_volume"],
+                                    "h1_relative_volume": market_data[
+                                        "market_context"
+                                    ]["h1"]["relative_volume"],
+                                    "daily_tick_volume": market_data[
+                                        "market_context"
+                                    ]["daily"]["tick_volume"],
+                                    "daily_relative_volume": market_data[
+                                        "market_context"
+                                    ]["daily"]["relative_volume"],
+                                },
+                                "volatility": {
+                                    "h1_atr_14": market_data[
+                                        "market_context"
+                                    ]["h1"]["atr_14"],
+                                    "daily_atr_14": market_data[
+                                        "market_context"
+                                    ]["daily"]["atr_14"],
+                                },
+                                "correlated_asset_prices": (
+                                    fetch_correlated_asset_prices(
+                                        symbol,
+                                        config.SYMBOLS,
+                                    )
+                                ),
+                            },
+                        }
+
+                        append_trade_memory(memory_record)
+
+                        bot_state["trade_history"].append(
+                            trade_info
+                        )
+
+                        print(
+                            f"[TRADE] {symbol} | "
+                            f"{signal} | "
+                            f"Trade executed successfully"
+                        )
+
+                    else:
+
+                        print(
+                            f"[AI] {symbol} | "
+                            f"HOLD - No trade"
+                        )
+
+                except Exception as e:
+
+                    # Don't allow one failed symbol to stop
+                    # the entire hedge fund loop.
+
+                    print(
+                        f"[ERROR] {symbol}: {str(e)}"
+                    )
+
+                # Small yield so other FastAPI tasks can run
+                await asyncio.sleep(0.1)
+
+        # ----------------------------------------------------
+        # Wait before the next complete scan
+        # ----------------------------------------------------
+
+        await asyncio.sleep(
+            bot_state["interval"]
+        )
+
+
+# ============================================================
+# START BACKGROUND TRADING TASK
+# ============================================================
+
+@app.on_event("startup")
+async def startup_event():
+
+    asyncio.create_task(
+        trading_loop()
+    )
+
+    print(
+        "[SYSTEM] Autonomous AI Hedge Fund started."
+    )

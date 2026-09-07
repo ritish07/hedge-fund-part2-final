@@ -1,83 +1,224 @@
-import platform
-import random
-import config
+# data_engine.py
 
-if platform.system() != "Windows":
-    # Mock data for Mac UI testing
-    def fetch_multi_timeframe_data(symbol):
-        return {
-            "daily_data": "Date,Open,High,Low,Close\n2024-05-01,1.050,1.060,1.045,1.055\n2024-05-02,1.055,1.065,1.050,1.062\n",
-            "h1_data": "Time,Open,High,Low,Close\n10:00,1.060,1.062,1.058,1.061\n11:00,1.061,1.063,1.060,1.062\n",
-            "current_price": round(random.uniform(1.050, 1.070), 4),
-            "equity": round(random.uniform(9950.0, 10150.0), 2)
+import MetaTrader5 as mt5
+import pandas as pd
+import pandas_ta as ta
+
+
+ATR_LENGTH = 14
+RSI_LENGTH = 14
+EMA_LENGTH = 200
+RELATIVE_VOLUME_LENGTH = 20
+
+
+def _add_market_indicators(dataframe):
+    """Add the technical indicators used by the trading decision engine."""
+
+    dataframe = dataframe.copy()
+    dataframe["atr_14"] = ta.atr(
+        high=dataframe["high"],
+        low=dataframe["low"],
+        close=dataframe["close"],
+        length=ATR_LENGTH,
+    )
+    dataframe["rsi_14"] = ta.rsi(dataframe["close"], length=RSI_LENGTH)
+    dataframe["ema_200"] = ta.ema(dataframe["close"], length=EMA_LENGTH)
+
+    average_volume = ta.sma(
+        dataframe["tick_volume"], length=RELATIVE_VOLUME_LENGTH
+    )
+    dataframe["relative_volume"] = dataframe["tick_volume"] / average_volume
+
+    return dataframe
+
+
+def _latest_market_context(dataframe):
+    """Return the most recent fully calculated indicator values for the LLM."""
+
+    latest = dataframe.iloc[-1]
+    fields = (
+        "close",
+        "tick_volume",
+        "atr_14",
+        "rsi_14",
+        "ema_200",
+        "relative_volume",
+    )
+    return {
+        field: round(float(latest[field]), 6)
+        if pd.notna(latest[field])
+        else None
+        for field in fields
+    }
+
+
+def initialize_mt5():
+    """
+    Initialize connection to the running MetaTrader 5 terminal.
+    """
+
+    if not mt5.initialize():
+        error = mt5.last_error()
+        raise RuntimeError(f"MT5 initialization failed: {error}")
+
+    return True
+
+
+def fetch_correlated_asset_prices(symbol, monitored_symbols):
+    """Capture live prices for the other assets monitored by this strategy."""
+
+    prices = {}
+
+    for related_symbol in monitored_symbols:
+        if related_symbol == symbol:
+            continue
+
+        if not mt5.symbol_select(related_symbol, True):
+            prices[related_symbol] = None
+            continue
+
+        tick = mt5.symbol_info_tick(related_symbol)
+        prices[related_symbol] = (
+            {
+                "bid": float(tick.bid),
+                "ask": float(tick.ask),
+                "last": float(tick.last),
+            }
+            if tick is not None
+            else None
+        )
+
+    return prices
+
+
+def fetch_multi_timeframe_data(symbol):
+    """
+    Fetch market data for a symbol.
+
+    Daily:
+        Last 10 candles plus indicator context -> Macro trend
+
+    1-Hour:
+        Last 24 candles plus indicator context -> Micro momentum
+
+    Returns:
+        {
+            "symbol": symbol,
+            "daily_csv": "...",
+            "hourly_csv": "...",
+            "market_context": {"daily": {...}, "h1": {...}},
+            "equity": float,
+            "ask": float
         }
-else:
-    import MetaTrader5 as mt5
-    import pandas as pd
+    """
 
-    def initialize_mt5():
-        params = {}
-        if hasattr(config, "MT5_PATH") and config.MT5_PATH:
-            params["path"] = config.MT5_PATH
-        if hasattr(config, "MT5_LOGIN") and config.MT5_LOGIN and hasattr(config, "MT5_PASSWORD") and config.MT5_PASSWORD and hasattr(config, "MT5_SERVER") and config.MT5_SERVER:
-            params["login"] = int(config.MT5_LOGIN)
-            params["password"] = config.MT5_PASSWORD
-            params["server"] = config.MT5_SERVER
+    # Make sure MT5 is initialized
+    if not mt5.terminal_info():
+        initialize_mt5()
 
-        if not mt5.initialize(**params):
-            print(f"[MT5] Initialization failed: {mt5.last_error()}")
-            return False
-        return True
+    # Make sure the symbol is available
+    if not mt5.symbol_select(symbol, True):
+        raise RuntimeError(f"Could not select symbol: {symbol}")
 
-    def resolve_symbol(symbol):
-        matches = mt5.symbols_get()
-        if matches:
-            requested = symbol.casefold()
-            for item in matches:
-                if item.name.casefold() == requested:
-                    if not item.visible:
-                        mt5.symbol_select(item.name, True)
-                    return item.name
-            for item in matches:
-                if item.name.casefold().startswith(requested):
-                    if not item.visible:
-                        mt5.symbol_select(item.name, True)
-                    return item.name
-        return symbol
+    # ---------------------------------------------------------
+    # Fetch Daily candles - Macro Trend
+    # ---------------------------------------------------------
 
-    def fetch_multi_timeframe_data(symbol):
-        if not initialize_mt5():
-            return None
+    daily_rates = mt5.copy_rates_from_pos(
+        symbol,
+        mt5.TIMEFRAME_D1,
+        0,
+        EMA_LENGTH + 50
+    )
 
-        actual_symbol = resolve_symbol(symbol)
+    if daily_rates is None or len(daily_rates) == 0:
+        raise RuntimeError(
+            f"Failed to fetch Daily data for {symbol}: {mt5.last_error()}"
+        )
 
-        # Fetch Daily Macro Data (Last 10 candles)
-        daily_rates = mt5.copy_rates_from_pos(actual_symbol, mt5.TIMEFRAME_D1, 0, 10)
-        if daily_rates is not None and len(daily_rates) > 0:
-            df_daily = pd.DataFrame(daily_rates)
-            df_daily['time'] = pd.to_datetime(df_daily['time'], unit='s')
-            daily_csv = df_daily[['time', 'open', 'high', 'low', 'close']].to_csv(index=False)
-        else:
-            daily_csv = f"No daily rates available for {actual_symbol}"
+    daily_df = pd.DataFrame(daily_rates)
 
-        # Fetch H1 Micro Data (Last 24 candles)
-        h1_rates = mt5.copy_rates_from_pos(actual_symbol, mt5.TIMEFRAME_H1, 0, 24)
-        if h1_rates is not None and len(h1_rates) > 0:
-            df_h1 = pd.DataFrame(h1_rates)
-            df_h1['time'] = pd.to_datetime(df_h1['time'], unit='s')
-            h1_csv = df_h1[['time', 'open', 'high', 'low', 'close']].to_csv(index=False)
-        else:
-            h1_csv = f"No H1 rates available for {actual_symbol}"
-        
-        # Get Current Equity
-        account_info = mt5.account_info()
-        equity = account_info.equity if account_info else 0.0
-        tick = mt5.symbol_info_tick(actual_symbol)
-        current_price = tick.ask if tick else 0.0
+    # Convert Unix timestamp to readable datetime
+    daily_df["time"] = pd.to_datetime(
+        daily_df["time"],
+        unit="s"
+    )
 
-        return {
-            "daily_data": daily_csv,
-            "h1_data": h1_csv,
-            "current_price": current_price,
-            "equity": equity
-        }
+    daily_df = _add_market_indicators(daily_df)
+    daily_context = _latest_market_context(daily_df)
+
+    # Keep the LLM payload focused on recent price action.
+    daily_csv = daily_df.tail(10).to_csv(index=False)
+
+    # ---------------------------------------------------------
+    # Fetch 1-Hour candles - Micro Momentum
+    # ---------------------------------------------------------
+
+    hourly_rates = mt5.copy_rates_from_pos(
+        symbol,
+        mt5.TIMEFRAME_H1,
+        0,
+        EMA_LENGTH + 50
+    )
+
+    if hourly_rates is None or len(hourly_rates) == 0:
+        raise RuntimeError(
+            f"Failed to fetch 1-Hour data for {symbol}: {mt5.last_error()}"
+        )
+
+    hourly_df = pd.DataFrame(hourly_rates)
+
+    # Convert Unix timestamp to readable datetime
+    hourly_df["time"] = pd.to_datetime(
+        hourly_df["time"],
+        unit="s"
+    )
+
+    hourly_df = _add_market_indicators(hourly_df)
+    hourly_context = _latest_market_context(hourly_df)
+
+    # Keep the LLM payload focused on recent price action.
+    hourly_csv = hourly_df.tail(24).to_csv(index=False)
+
+    # ---------------------------------------------------------
+    # Current account equity
+    # ---------------------------------------------------------
+
+    account_info = mt5.account_info()
+
+    if account_info is None:
+        raise RuntimeError(
+            f"Failed to retrieve account information: {mt5.last_error()}"
+        )
+
+    equity = float(account_info.equity)
+
+    # ---------------------------------------------------------
+    # Current Ask Price
+    # ---------------------------------------------------------
+
+    tick = mt5.symbol_info_tick(symbol)
+
+    if tick is None:
+        raise RuntimeError(
+            f"Failed to retrieve current tick for {symbol}: "
+            f"{mt5.last_error()}"
+        )
+
+    ask_price = float(tick.ask)
+
+    # ---------------------------------------------------------
+    # Return everything
+    # ---------------------------------------------------------
+
+    return {
+        "symbol": symbol,
+        "daily_csv": daily_csv,
+        "hourly_csv": hourly_csv,
+        "market_context": {
+            "daily": daily_context,
+            "h1": hourly_context,
+        },
+        "equity": equity,
+        "ask": ask_price
+    }
