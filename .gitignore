@@ -5,3 +5,8 @@ __pycache__/
 .venv/
 env/
 venv/
+*.log
+*.pid
+memory.json
+macro_state.json
+new_rules.json

@@ -6,6 +6,7 @@ from pathlib import Path
 import requests
 
 import config
+from macro_engine import get_macro_context
 
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
@@ -87,6 +88,9 @@ def get_ai_decision(market_data, symbol):
     learned_rules = load_learned_rules(symbol)
     learned_rules_context = json.dumps(learned_rules, indent=2)
 
+    macro = get_macro_context()
+    bulletins_text = "\n".join(f"- {b}" for b in macro.get("top_bulletins", []))
+
     system_prompt = f"""
 You are an elite quantitative trader analyzing {symbol}.
 
@@ -115,6 +119,25 @@ Risk parameters for BUY or SELL:
 Your job is to decide whether the best action RIGHT NOW is BUY, SELL, or HOLD.
 
 Be conservative. If the market structure is unclear, conflicting, or there is no high-quality setup, return HOLD.
+
+GLOBAL MACRO & GEOPOLITICAL INTELLIGENCE:
+- Active Session: {macro.get('active_session')} | Sentiment: {macro.get('session_sentiment')}
+- Geopolitical Risk Level: {macro.get('geopolitical_risk_level')}
+- Macro Regime: {macro.get('market_regime')} | Fed Stance: {macro.get('fed_rate_stance')}
+- US 10Y Yield: {macro.get('us_10y_yield')}% | WTI Crude Oil: ${macro.get('crude_oil_price')}/bbl
+- DXY Trend: {macro.get('dxy_bias')}
+- Gold Macro Impact: {macro.get('gold_bias')} ({macro.get('gold_rationale')})
+- Bitcoin Macro Impact: {macro.get('bitcoin_bias')} ({macro.get('bitcoin_rationale')})
+- Forex Market Dynamics: {macro.get('forex_bias')}
+- Top Breaking Geopolitical / Central Bank Bulletins:
+{bulletins_text}
+
+MACRO ALIGNMENT RULES:
+- If trading Gold (XAUUSDm): Strongly respect real yields, DXY, and geopolitical risk escalation. High yields without geopolitical crisis create headwinds. Elevated/Critical conflict risk creates powerful safe-haven demand.
+- If trading Bitcoin (BTCUSDm): Factor in broader risk-on vs. risk-off sentiment and macro liquidity.
+- If trading USDCADm: Strongly factor in Crude Oil momentum (oil rallies favor CAD).
+- If trading USDJPYm: Account for US-Japan yield spreads and Yen carry unwind pressures.
+Do not take counter-trend setups that directly fight dominant macro/geopolitical forces.
 
 LEARNED LOSS-PATTERN RULES
 The following rules were generated from repeated, realized losses in prior

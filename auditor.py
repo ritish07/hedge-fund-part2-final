@@ -46,26 +46,24 @@ def load_rules_document():
     return document
 
 
+from memory_store import reconcile_closed_trades
+
+
 def request_rules(trades):
     """Ask DeepSeek for evidence-based confidence-reduction rules."""
 
     system_prompt = """
-You are a trading-risk auditor. Analyze confirmed trade records to find repeated
-loss patterns. Focus on cross-asset price relationships while factoring in the
-recorded volume (tick volume and relative volume) and volatility (ATR).
+You are a trading-risk auditor. Analyze confirmed closed trade records to find repeated loss patterns. Factor in price action, cross-asset relationships, volume (tick volume and relative volume), and volatility (ATR).
 
-Only propose a rule when supplied data demonstrates the same setup caused at
-least 3 losses. Do not claim causality from one loss or from missing context.
-A rule must lower model confidence for that setup only; never increase risk,
-open a position, or bypass risk controls.
+Only propose a rule when supplied data demonstrates the same setup or condition caused at least 3 losses. Do not claim causality from one loss or from missing context. A rule must lower model confidence for that setup only; never increase risk, open a position, or bypass risk controls.
 
 Return ONLY a JSON object in exactly this shape:
 {
   "rules": [
     {
-      "setup": "precise, testable cross-asset condition",
+      "setup": "precise, testable setup or indicator condition (e.g. H1 relative_volume < 0.45 with elevated ATR, or conflicting cross-asset move)",
       "confidence_reduction_points": 15,
-      "evidence": "concise description of at least 3 matching losses",
+      "evidence": "concise description of matching losses",
       "affected_symbol": "symbol",
       "sample_size": 3
     }
@@ -151,16 +149,37 @@ def save_rules(document):
 def run_audit(force=False):
     """Run one audit, unless this UTC day has already been audited."""
 
+    # Automatically reconcile any closed trades from MT5 first
+    try:
+        reconciled_count = reconcile_closed_trades()
+        if reconciled_count > 0:
+            print(f"[AUDITOR] Reconciled {reconciled_count} closed trade(s) from MT5.")
+    except Exception as e:
+        print(f"[AUDITOR] Note: Trade reconciliation warning: {e}")
+
     today = datetime.now(timezone.utc).date().isoformat()
     document = load_rules_document()
-    if not force and document["last_audit_date"] == today:
+    if not force and document.get("last_audit_date") == today:
         print("[AUDITOR] Audit already completed today (UTC).")
-        return False
+        return {
+            "status": "already_audited",
+            "message": "Audit already completed today (UTC). Use force=True to re-run.",
+            "rules": document.get("rules", []),
+            "last_audit_date": document.get("last_audit_date"),
+        }
 
-    trades = load_json_array(MEMORY_FILE)[-MAX_TRADES:]
+    all_trades = load_json_array(MEMORY_FILE)
+    # Prioritize closed trades with realized outcome
+    closed_trades = [t for t in all_trades if t.get("status") == "CLOSED" or t.get("realized_pnl") is not None]
+    trades = (closed_trades if len(closed_trades) >= 3 else all_trades)[-MAX_TRADES:]
+
     if not trades:
         print("[AUDITOR] No confirmed trades in memory.json; nothing to audit.")
-        return False
+        return {
+            "status": "no_trades",
+            "message": "No confirmed trades to audit.",
+            "rules": document.get("rules", []),
+        }
 
     document["rules"] = request_rules(trades)
     document["last_audit_date"] = today
@@ -168,7 +187,12 @@ def run_audit(force=False):
     document["trades_analyzed"] = len(trades)
     save_rules(document)
     print(f"[AUDITOR] Saved {len(document['rules'])} rule(s).")
-    return True
+    return {
+        "status": "success",
+        "rules": document["rules"],
+        "trades_analyzed": len(trades),
+        "last_audit_at": document["last_audit_at"],
+    }
 
 
 if __name__ == "__main__":

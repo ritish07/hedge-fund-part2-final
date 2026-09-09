@@ -4,6 +4,8 @@ import MetaTrader5 as mt5
 import pandas as pd
 import pandas_ta as ta
 
+import config
+
 
 ATR_LENGTH = 14
 RSI_LENGTH = 14
@@ -57,9 +59,26 @@ def initialize_mt5():
     Initialize connection to the running MetaTrader 5 terminal.
     """
 
-    if not mt5.initialize():
+    init_kwargs = {}
+    if getattr(config, "MT5_PATH", None):
+        init_kwargs["path"] = config.MT5_PATH
+
+    if not mt5.initialize(**init_kwargs):
         error = mt5.last_error()
         raise RuntimeError(f"MT5 initialization failed: {error}")
+
+    expected_login = getattr(config, "MT5_LOGIN", None)
+    acc = mt5.account_info()
+    if expected_login and acc and acc.login != expected_login:
+        if getattr(config, "MT5_PASSWORD", None) and getattr(config, "MT5_SERVER", None):
+            if not mt5.login(login=expected_login, password=config.MT5_PASSWORD, server=config.MT5_SERVER):
+                raise RuntimeError(
+                    f"Failed to log into MT5 account {expected_login}: {mt5.last_error()}"
+                )
+        else:
+            raise RuntimeError(
+                f"Connected MT5 account is {acc.login}, but expected {expected_login}"
+            )
 
     return True
 
@@ -113,7 +132,9 @@ def fetch_multi_timeframe_data(symbol):
     """
 
     # Make sure MT5 is initialized
-    if not mt5.terminal_info():
+    expected_login = getattr(config, "MT5_LOGIN", None)
+    acc = mt5.account_info() if mt5.terminal_info() else None
+    if acc is None or (expected_login and acc.login != expected_login):
         initialize_mt5()
 
     # Make sure the symbol is available
